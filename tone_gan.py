@@ -47,6 +47,8 @@ parser.add_argument('-vocab_size', type=int,
                     help='vocabulary size.')
 parser.add_argument('-num_tones', type=int,
                     help='how many tones.')
+parser.add_argument('-tone_loss_rate', type=float,
+                    help='the portion of the tone')
 parser.add_argument('-decay_lr', action='store_true',
                     help='decay the learning rate if no improvement seen.')
 opt = parser.parse_args()
@@ -79,6 +81,7 @@ with open(opt.char_info) as f:
     char2tone = json.load(f)
 
 char_tone_map = language_helpers.get_mask(charmap, tonemap, char2tone)
+
 OUTPUT_SIZE = len(tonemap) + len(charmap)
 
 TONE_SIZE = len(tonemap)
@@ -112,16 +115,18 @@ def Generator(n_samples, prev_outputs=None):
     output = tf.transpose(output, [0, 2, 1])
     unfolded = tf.reshape(output, [-1, OUTPUT_SIZE])
     char, tone = tf.split(unfolded, [len(charmap), len(tonemap)], 1)
-    #tone = tf.nn.softmax(tone)
-    tone_weights = tf.matmul(tone, M, name="toneweight")
-    char = tf.multiply(tone_weights, char, name="charlogit")
-    #char = tf.nn.softmax(char, name="charprob")
-    output = tf.reshape(tf.concat([char, tone], 1), tf.shape(output))
-    return output
+    tone = tf.nn.softmax(tone)
+    tone_weights = tf.matmul(tone, M)
+    char = tf.multiply(tone_weights, char)
+    char = tf.nn.softmax(char)
+    char = tf.reshape(char, [n_samples, SEQ_LEN, len(charmap)])
+    tone = tf.reshape(tone, [n_samples, SEQ_LEN, len(tonemap)])
+    #output = tf.reshape(tf.concat([char, tone], 1), tf.shape(output))
+    return char, tone
 
-def Discriminator(inputs):
+def Discriminator(inputs, size):
     output = tf.transpose(inputs, [0,2,1])
-    output = lib.ops.conv1d.Conv1D('Discriminator.Input', OUTPUT_SIZE, DIM, 1, output)
+    output = lib.ops.conv1d.Conv1D('Discriminator.Input', size, DIM, 1, output)
     output = ResBlock('Discriminator.1', output)
     output = ResBlock('Discriminator.2', output)
     output = ResBlock('Discriminator.3', output)
@@ -135,12 +140,20 @@ real_inputs_discrete = tf.placeholder(tf.int32, shape=[BATCH_SIZE, SEQ_LEN])
 real_tones_discrete = tf.placeholder(tf.int32, shape=[BATCH_SIZE, SEQ_LEN])
 real_inputs = tf.one_hot(real_inputs_discrete, len(charmap))
 real_tones = tf.one_hot(real_tones_discrete, len(tonemap))
-real_inputs = tf.concat([real_inputs, real_tones], 2)
-fake_inputs = Generator(BATCH_SIZE)
-fake_inputs_discrete = tf.argmax(fake_inputs[:len(charmap)], fake_inputs.get_shape().ndims-1)
+fake_inputs, fake_tones = Generator(BATCH_SIZE)
+fake_inputs_discrete = tf.argmax(fake_inputs, fake_inputs.get_shape().ndims-1)
 
-disc_real = Discriminator(real_inputs) 
-disc_fake = Discriminator(fake_inputs)
+with tf.variable_scope("char") as scope:
+    disc_char_real = Discriminator(real_inputs, len(charmap))
+with tf.variable_scope("tone") as scope:
+    disc_tone_real = Discriminator(real_tones, len(tonemap))
+with tf.variable_scope("char") as scope:
+    disc_char_fake = Discriminator(fake_inputs, len(charmap))
+with tf.variable_scope("tone") as scope:
+    disc_tone_fake = Discriminator(fake_tones, len(tonemap))
+
+disc_fake = (1 - opt.tone_loss_rate) * disc_char_fake + opt.tone_loss_rate * disc_tone_fake
+disc_real = (1 - opt.tone_loss_rate) * disc_char_real + opt.tone_loss_rate * disc_tone_real
 
 disc_cost = tf.reduce_mean(disc_fake) - tf.reduce_mean(disc_real)
 gen_cost = -tf.reduce_mean(disc_fake)
@@ -195,6 +208,7 @@ true_char_ngram_lms = [language_helpers.NgramLanguageModel(i+1, lines, tokenize=
 global_step = tf.Variable(0, trainable=False)
 global_step_increment = global_step.assign(global_step + 1)
 saver = tf.train.Saver()
+
 with tf.Session() as session:
     ckpt = tf.train.get_checkpoint_state(opt.model_dir)
     if ckpt and tf.train.checkpoint_exists(ckpt.model_checkpoint_path):

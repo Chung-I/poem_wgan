@@ -151,3 +151,80 @@ def load_dataset(max_length, max_n_examples, tokenize=False, max_vocab_size=2048
 # charmap: {'unk':0, 'c':1, ... }
 # inv_charmap: ['unk', 'c', ...]
 
+def load_tones(max_length, max_n_examples, tokenize=False, max_vocab_size=106, data_dir=None, save_data_dir=None):
+    print("loading dataset...")
+
+    lines = []
+
+    finished = False
+
+    path = data_dir
+    with open(path, 'r') as f:
+        for line in f:
+            line = [w for w in line[:-1].split(",")]
+            line = tuple(line)
+            if len(line) > max_length:
+                line = line[:max_length]
+
+            lines.append(line + ( ("`",)*(max_length-len(line)) ) )
+
+            if len(lines) == max_n_examples:
+                finished = True
+                break
+
+    np.random.shuffle(lines)
+
+    import collections
+    counts = collections.Counter(char for line in lines for char in line)
+
+    charmap = {}
+    inv_charmap = []
+
+    for char,count in counts.most_common(max_vocab_size-1):
+        if char not in charmap:
+            charmap[char] = len(inv_charmap)
+            inv_charmap.append(char)
+    print(charmap)
+    filtered_lines = []
+    for line in lines:
+        filtered_line = []
+        for char in line:
+            if char in charmap:
+                filtered_line.append(char)
+            else:
+                print("tone {0} not found".format(char))
+        filtered_lines.append(tuple(filtered_line))
+
+    if save_data_dir:
+        with open(save_data_dir, "w") as fo:
+            fo.write("\n".join(filtered_lines))
+    for i in range(100):
+        print(filtered_lines[i])
+
+    print("loaded {} lines in dataset".format(len(lines)))
+    return filtered_lines, charmap, inv_charmap  
+
+
+def get_mask(charmap, tonemap, char2tone):
+
+    tone_ids = []
+    char_tone_map = np.zeros((len(tonemap), len(charmap)), dtype=np.bool)
+    unk_idx = []
+
+    for char, idx in charmap.items():
+        try:
+            char_all_tones = char2tone[char]
+        except:
+            unk_idx.append(idx)
+            continue
+        char_tones = next(iter(char_all_tones.values()))
+        char_tone = char_tones[0]["聲調"] + char_tones[0]["廣韻同用例"]
+        tone_id = tonemap[char_tone]
+        tone_ids.append(tone_id)
+
+    indices = np.arange(len(charmap))
+    indices = np.delete(indices, unk_idx)
+    char_tone_map[tone_ids, indices] = True
+
+    return char_tone_map
+
