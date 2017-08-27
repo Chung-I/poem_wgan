@@ -91,44 +91,44 @@ print("char size: {0}".format(CHAR_SIZE))
 def make_noise(shape):
     return tf.random_normal(shape)
 
-def ResBlock(name, inputs):
+def ResBlock(name, inputs, ksize):
     output = inputs
     output = tf.nn.relu(output)
-    output = lib.ops.conv1d.Conv1D(name+'.1', DIM, DIM, 5, output)
+    output = lib.ops.conv1d.Conv1D(name+'.1', DIM, DIM, ksize, output)
     output = tf.nn.relu(output)
-    output = lib.ops.conv1d.Conv1D(name+'.2', DIM, DIM, 5, output)
+    output = lib.ops.conv1d.Conv1D(name+'.2', DIM, DIM, ksize, output)
     return inputs + (0.3*output)
 
 def Generator(n_samples, prev_outputs=None):
     output = make_noise(shape=[n_samples, 128])
     output = lib.ops.linear.Linear('Generator.Input', 128, SEQ_LEN*DIM, output)
     output = tf.reshape(output, [-1, DIM, SEQ_LEN])
-    output = ResBlock('Generator.1', output)
-    output = ResBlock('Generator.2', output)
-    output = ResBlock('Generator.3', output)
-    output = ResBlock('Generator.4', output)
-    output = ResBlock('Generator.5', output)
+    output = ResBlock('Generator.1', output, 5)
+    output = ResBlock('Generator.2', output, 5)
+    output = ResBlock('Generator.3', output, 5)
+    output = ResBlock('Generator.4', output, 5)
+    output = ResBlock('Generator.5', output, 5)
     output = lib.ops.conv1d.Conv1D('Generator.Output', DIM, OUTPUT_SIZE, 1, output)
     output = tf.transpose(output, [0, 2, 1])
     unfolded = tf.reshape(output, [-1, OUTPUT_SIZE])
     char, tone = tf.split(unfolded, [len(charmap), len(tonemap)], 1)
-    #tone = tf.nn.softmax(tone)
-    tone_weights = tf.matmul(tone, M, name="toneweight")
-    char = tf.multiply(tone_weights, char, name="charlogit")
-    #char = tf.nn.softmax(char, name="charprob")
+    tone = tf.nn.softmax(tone)
+    char = tf.nn.softmax(char)
     output = tf.reshape(tf.concat([char, tone], 1), tf.shape(output))
     return output
 
 def Discriminator(inputs):
     output = tf.transpose(inputs, [0,2,1])
     output = lib.ops.conv1d.Conv1D('Discriminator.Input', OUTPUT_SIZE, DIM, 1, output)
-    output = ResBlock('Discriminator.1', output)
-    output = ResBlock('Discriminator.2', output)
-    output = ResBlock('Discriminator.3', output)
-    output = ResBlock('Discriminator.4', output)
-    output = ResBlock('Discriminator.5', output)
-    output = tf.reshape(output, [-1, SEQ_LEN*DIM])
-    output = lib.ops.linear.Linear('Discriminator.Output', SEQ_LEN*DIM, 1, output)
+    output_2 = ResBlock('Discriminator.2.1', output, 2)
+    output_2 = ResBlock('Discriminator.2.2', output_2, 2)
+    output_3 = ResBlock('Discriminator.3.1', output, 3)
+    output_3 = ResBlock('Discriminator.3.2', output_2, 3)
+    output_4 = ResBlock('Discriminator.4.1', output, 4)
+    output_4 = ResBlock('Discriminator.4.2', output_4, 4)
+    output = tf.concat([output_2, output_3, output_4], 1)
+    output = tf.reshape(output, [-1, SEQ_LEN*DIM*3])
+    output = lib.ops.linear.Linear('Discriminator.Output', SEQ_LEN*DIM*3, 1, output)
     return output
 
 real_inputs_discrete = tf.placeholder(tf.int32, shape=[BATCH_SIZE, SEQ_LEN])

@@ -3,3 +3,5 @@ models
 nohup.out
 log.pkl
 *.sh
+*/__pycache__
+__pycache__

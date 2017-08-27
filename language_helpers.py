@@ -177,8 +177,8 @@ def load_tones(max_length, max_n_examples, tokenize=False, max_vocab_size=106, d
     import collections
     counts = collections.Counter(char for line in lines for char in line)
 
-    charmap = {}
-    inv_charmap = []
+    charmap = {'unk':0}
+    inv_charmap = ['unk']
 
     for char,count in counts.most_common(max_vocab_size-1):
         if char not in charmap:
@@ -209,13 +209,14 @@ def get_mask(charmap, tonemap, char2tone):
 
     tone_ids = []
     char_tone_map = np.zeros((len(tonemap), len(charmap)), dtype=np.bool)
-    unk_idx = []
+    #unk_idx = []
 
     for char, idx in charmap.items():
         try:
             char_all_tones = char2tone[char]
         except:
-            unk_idx.append(idx)
+            #unk_idx.append(idx)
+            tone_ids.append(tonemap['unk'])
             continue
         char_tones = next(iter(char_all_tones.values()))
         char_tone = char_tones[0]["聲調"] + char_tones[0]["廣韻同用例"]
@@ -223,7 +224,7 @@ def get_mask(charmap, tonemap, char2tone):
         tone_ids.append(tone_id)
 
     indices = np.arange(len(charmap))
-    indices = np.delete(indices, unk_idx)
+    #indices = np.delete(indices, unk_idx)
     char_tone_map[tone_ids, indices] = True
 
     return char_tone_map

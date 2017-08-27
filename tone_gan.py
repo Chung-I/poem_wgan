@@ -16,6 +16,7 @@ import tflib.ops.conv1d
 import tflib.plot
 import argparse
 import json
+import pdb
 
 # Download Google Billion Word at http://www.statmt.org/lm-benchmark/ and
 # fill in the path to the extracted files here!
@@ -47,8 +48,6 @@ parser.add_argument('-vocab_size', type=int,
                     help='vocabulary size.')
 parser.add_argument('-num_tones', type=int,
                     help='how many tones.')
-parser.add_argument('-tone_loss_rate', type=float,
-                    help='the portion of the tone')
 parser.add_argument('-decay_lr', action='store_true',
                     help='decay the learning rate if no improvement seen.')
 opt = parser.parse_args()
@@ -82,7 +81,8 @@ with open(opt.char_info) as f:
 
 char_tone_map = language_helpers.get_mask(charmap, tonemap, char2tone)
 
-OUTPUT_SIZE = len(tonemap) + len(charmap)
+#OUTPUT_SIZE = len(tonemap) + len(charmap)
+OUTPUT_SIZE = len(charmap)
 
 TONE_SIZE = len(tonemap)
 CHAR_SIZE = len(charmap)
@@ -97,9 +97,9 @@ def make_noise(shape):
 def ResBlock(name, inputs):
     output = inputs
     output = tf.nn.relu(output)
-    output = lib.ops.conv1d.Conv1D(name+'.1', DIM, DIM, 5, output)
+    output = lib.ops.conv1d.Conv1D(name+'.1', DIM, DIM, 6, output)
     output = tf.nn.relu(output)
-    output = lib.ops.conv1d.Conv1D(name+'.2', DIM, DIM, 5, output)
+    output = lib.ops.conv1d.Conv1D(name+'.2', DIM, DIM, 6, output)
     return inputs + (0.3*output)
 
 def Generator(n_samples, prev_outputs=None):
@@ -113,47 +113,55 @@ def Generator(n_samples, prev_outputs=None):
     output = ResBlock('Generator.5', output)
     output = lib.ops.conv1d.Conv1D('Generator.Output', DIM, OUTPUT_SIZE, 1, output)
     output = tf.transpose(output, [0, 2, 1])
-    unfolded = tf.reshape(output, [-1, OUTPUT_SIZE])
-    char, tone = tf.split(unfolded, [len(charmap), len(tonemap)], 1)
-    tone = tf.nn.softmax(tone)
-    tone_weights = tf.matmul(tone, M)
-    char = tf.multiply(tone_weights, char)
+    #print("output shape: {0}".format(str(char.get_shape())))
+    char = tf.reshape(output, [-1, OUTPUT_SIZE])
+    #char, tone = tf.split(unfolded, [len(charmap), len(tonemap)], 1)
+    #tone = tf.nn.softmax(tone)
+    #tone_weights = tf.matmul(tone, M)
+    _M = tf.transpose(M)
     char = tf.nn.softmax(char)
-    char = tf.reshape(char, [n_samples, SEQ_LEN, len(charmap)])
-    tone = tf.reshape(tone, [n_samples, SEQ_LEN, len(tonemap)])
-    #output = tf.reshape(tf.concat([char, tone], 1), tf.shape(output))
-    return char, tone
+    tone = tf.matmul(char,_M)
+    tone = tf.nn.softmax(tone)
+    #char = tf.multiply(tone_weights, char, name='charprob')
+    #char = tf.reshape(char, [n_samples, SEQ_LEN, len(charmap)])
+    #tone = tf.reshape(tone, [n_samples, SEQ_LEN, len(tonemap)])
+    output = tf.reshape(tf.concat([char, tone], 1), [n_samples, SEQ_LEN, len(charmap)+len(tonemap)])
+    return output
 
-def Discriminator(inputs, size):
+
+def sub_discriminator(name, inputs, size):
     output = tf.transpose(inputs, [0,2,1])
-    output = lib.ops.conv1d.Conv1D('Discriminator.Input', size, DIM, 1, output)
-    output = ResBlock('Discriminator.1', output)
-    output = ResBlock('Discriminator.2', output)
-    output = ResBlock('Discriminator.3', output)
-    output = ResBlock('Discriminator.4', output)
-    output = ResBlock('Discriminator.5', output)
+    output = lib.ops.conv1d.Conv1D(name + '.Discriminator.Input', size, DIM, 1, output)
+    output = ResBlock(name + '.Discriminator.1', output)
+    output = ResBlock(name + '.Discriminator.2', output)
+    output = ResBlock(name + '.Discriminator.3', output)
+    output = ResBlock(name + '.Discriminator.4', output)
+    output = ResBlock(name + '.Discriminator.5', output)
     output = tf.reshape(output, [-1, SEQ_LEN*DIM])
-    output = lib.ops.linear.Linear('Discriminator.Output', SEQ_LEN*DIM, 1, output)
+    output = lib.ops.linear.Linear(name + '.Discriminator.Output', SEQ_LEN*DIM, 1, output)
+    return output
+
+def Discriminator(inputs):
+    _chars, _tones = tf.split(inputs, [len(charmap), len(tonemap)], 2)
+    output_char = sub_discriminator("char", _chars, len(charmap))
+    output_tone = sub_discriminator("tone", _tones, len(tonemap))
+    ratio = len(charmap) / (len(tonemap) + len(charmap))
+    #ratio *= 0.8
+    #print("ratio: {0}".format(ratio))
+    #output = output_char * (1 - ratio) + output_tone * ratio
+    output = output_char + output_tone
     return output
 
 real_inputs_discrete = tf.placeholder(tf.int32, shape=[BATCH_SIZE, SEQ_LEN])
 real_tones_discrete = tf.placeholder(tf.int32, shape=[BATCH_SIZE, SEQ_LEN])
 real_inputs = tf.one_hot(real_inputs_discrete, len(charmap))
 real_tones = tf.one_hot(real_tones_discrete, len(tonemap))
-fake_inputs, fake_tones = Generator(BATCH_SIZE)
+real_inputs = tf.concat([real_inputs, real_tones], 2)
+fake_inputs = Generator(BATCH_SIZE)
 fake_inputs_discrete = tf.argmax(fake_inputs, fake_inputs.get_shape().ndims-1)
 
-with tf.variable_scope("char") as scope:
-    disc_char_real = Discriminator(real_inputs, len(charmap))
-with tf.variable_scope("tone") as scope:
-    disc_tone_real = Discriminator(real_tones, len(tonemap))
-with tf.variable_scope("char") as scope:
-    disc_char_fake = Discriminator(fake_inputs, len(charmap))
-with tf.variable_scope("tone") as scope:
-    disc_tone_fake = Discriminator(fake_tones, len(tonemap))
-
-disc_fake = (1 - opt.tone_loss_rate) * disc_char_fake + opt.tone_loss_rate * disc_tone_fake
-disc_real = (1 - opt.tone_loss_rate) * disc_char_real + opt.tone_loss_rate * disc_tone_real
+disc_real = Discriminator(real_inputs)
+disc_fake = Discriminator(fake_inputs)
 
 disc_cost = tf.reduce_mean(disc_fake) - tf.reduce_mean(disc_real)
 gen_cost = -tf.reduce_mean(disc_fake)
@@ -202,8 +210,15 @@ def inf_train_gen():
 true_char_ngram_lms = [language_helpers.NgramLanguageModel(i+1, lines[10*BATCH_SIZE:], tokenize=False) for i in range(4)]
 validation_char_ngram_lms = [language_helpers.NgramLanguageModel(i+1, lines[:10*BATCH_SIZE], tokenize=False) for i in range(4)]
 for i in range(4):
-    print("validation set JSD for n={}: {}".format(i+1, true_char_ngram_lms[i].js_with(validation_char_ngram_lms[i])))
+    print("char validation set JSD for n={}: {}".format(i+1, true_char_ngram_lms[i].js_with(validation_char_ngram_lms[i])))
 true_char_ngram_lms = [language_helpers.NgramLanguageModel(i+1, lines, tokenize=False) for i in range(4)]
+
+true_tone_ngram_lms = [language_helpers.NgramLanguageModel(i+1, tones[10*BATCH_SIZE:], tokenize=False) for i in range(4)]
+validation_tone_ngram_lms = [language_helpers.NgramLanguageModel(i+1, tones[:10*BATCH_SIZE], tokenize=False) for i in range(4)]
+for i in range(4):
+    print("tone validation set JSD for n={}: {}".format(i+1, true_tone_ngram_lms[i].js_with(validation_tone_ngram_lms[i])))
+true_tone_ngram_lms = [language_helpers.NgramLanguageModel(i+1, tones, tokenize=False) for i in range(4)]
+
 
 global_step = tf.Variable(0, trainable=False)
 global_step_increment = global_step.assign(global_step + 1)
@@ -278,7 +293,13 @@ with tf.Session() as session:
                 if i == 0:
                     js1_ema.append(ema_alpha * js + (1 - ema_alpha) * js1_ema[-1])
                     print("js1_ema: {0}".format(js1_ema[-1]))
-                lib.plot.plot(os.path.join(opt.model_dir, 'js{}'.format(i+1)), js)
+                lib.plot.plot(os.path.join(opt.model_dir, 'char_js_{}'.format(i+1)), js)
+
+            for i in range(4):
+                lm = language_helpers.NgramLanguageModel(i+1, tones, tokenize=False)
+                js = lm.js_with(true_tone_ngram_lms[i])
+                lib.plot.plot(os.path.join(opt.model_dir, 'tone_js_{}'.format(i+1)), js)
+
             if opt.decay_lr:
               if global_step.eval() >= 299 and js1_ema[-1] > js1_ema[-2] and js1_ema[-2] > js1_ema[-3]:
                   session.run(lr_decay_op)
